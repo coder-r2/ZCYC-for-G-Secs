@@ -32,7 +32,9 @@ from src.data_loader import (  # noqa: E402
     CRORE,
     SCHEMAS,
     SDL_MAX_RESIDUAL_YEARS,
+    SDL_ZCYC_GRID,
     TBILL_TENORS,
+    ZCYC_GRID,
     build_clean_data,
     discover_raw_files,
     parse_bonds,
@@ -174,13 +176,14 @@ def test_tbills_take_the_nearest_published_bill(built):
 
 # ------------------------------------------------------------------ zcyc grids
 
-@pytest.mark.parametrize("name,stop", [("fbil_zcyc", 40.0), ("fbil_sdl_zcyc", 14.0)])
+@pytest.mark.parametrize("name,stop", [("fbil_zcyc", ZCYC_GRID[1]), ("fbil_sdl_zcyc", SDL_ZCYC_GRID[1])])
 def test_published_grid_is_a_clean_quarter_year_ladder(on_disk, name, stop):
     """Step and endpoints are asserted; the row count is not hard-coded.
 
-    The interface contract quotes 159 rows for a 0.25-to-40.00 grid in 0.25
-    steps, which is 160 points. Pinning the step and the two endpoints tests the
-    same property without depending on which number was the typo.
+    The interface contract quoted a 0.25-to-40.00 G-Sec grid of 159 rows, which
+    is neither the arithmetic (160) nor what FBIL publishes (0.25 to 50.00, 200
+    rows). Pinning step and endpoints to the ZCYC_GRID constants tests the same
+    property and keeps one place to change if FBIL extends the curve again.
     """
     t = on_disk[name]["tenor_years"].to_numpy(dtype=float)
     assert t[0] == pytest.approx(0.25)

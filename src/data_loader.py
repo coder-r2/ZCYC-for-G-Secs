@@ -51,9 +51,18 @@ SCHEMAS: dict[str, list[str]] = {
     ],
 }
 
-# Published ZCYC grids: (first tenor, last tenor, step).
-ZCYC_GRID = (0.25, 40.0, 0.25)
+# Published ZCYC grids: (first tenor, last tenor, step). Both were read off
+# FBIL's actual files: the G-Sec curve runs 0.25 to 50.00 (200 points), not to
+# 40.00 as the interface contract guessed, and the SDL curve stops at 14.00
+# (56 points) as expected.
+ZCYC_GRID = (0.25, 50.0, 0.25)
 SDL_ZCYC_GRID = (0.25, 14.0, 0.25)
+
+# Columns of a published ZCYC file that FBIL does not always publish. It gives
+# a par curve alongside the G-Sec zero curve but none alongside the SDL one,
+# so for SDL these columns exist in the schema and are empty. Nothing is
+# invented to fill them.
+OPTIONAL_ZCYC_COLUMNS = ("par_semi", "par_annual")
 
 # T-bill points the short end is built from, in the order the schema lists them.
 TBILL_TENORS = (("7D", 7 / 365), ("6M", 0.5), ("12M", 1.0))
@@ -82,11 +91,24 @@ BOND_ALIASES: dict[str, tuple[str, ...]] = {
     "isin": ("isin", "isinno", "isincode", "securityisin"),
     "desc": ("desc", "description", "securitydescription", "security", "securityname", "nomenclature"),
     "coupon": ("coupon", "couponrate", "coupon", "couponinpercent", "couponrateinpercent"),
-    "maturity": ("maturity", "maturitydate", "dateofmaturity", "redemptiondate", "maturitydt"),
+    "maturity": ("maturity", "maturitydate", "dateofmaturity", "redemptiondate", "maturitydt",
+                 "maturityddmmmyyyy"),
     "price": ("price", "cleanprice", "valuationprice", "priceper100", "fimmdaprice", "pricers"),
-    "ytm": ("ytm", "yieldtomaturity", "ytminpercent", "annualisedytm", "yield", "valuationytm"),
+    "ytm": ("ytm", "yieldtomaturity", "ytminpercent", "annualisedytm", "yield", "valuationytm",
+            "ytmpasemiannual"),
     "volume": ("volume", "tradedvolume", "turnover", "tradedvalue", "totaltradedvalue", "nosoftrades", "trades"),
+    # Not part of the `bonds` schema and dropped before it is returned. Read
+    # only so parse_bonds can see FBIL's "FRB" flag -- see FLOATER_REMARKS.
+    "remark": ("remark1", "remark", "remarks", "securitytype"),
 }
+
+# Values of FBIL's Remark column that mark a security whose cash flows are not
+# a fixed nominal coupon stream: floating-rate bonds reset off a benchmark and
+# inflation-indexed bonds pay on an indexed principal. Their quoted YTM is not
+# comparable with a fixed-coupon YTM, so fitting a nominal zero curve through
+# them is wrong however good the fit looks. FBIL excludes them from its own
+# curve too -- none of them carries the "Input Point" flag.
+FLOATER_REMARKS = ("frb", "iib", "floating", "inflation")
 
 TBILL_ALIASES: dict[str, tuple[str, ...]] = {
     "tenor": ("tenor", "tenure", "maturity", "period", "tenorindays", "residualmaturity"),
@@ -94,19 +116,24 @@ TBILL_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 ZCYC_ALIASES: dict[str, tuple[str, ...]] = {
-    "tenor_years": ("tenoryears", "tenor", "tenorinyears", "tenoryrs", "maturityyears", "years", "term"),
+    "tenor_years": ("tenoryears", "tenor", "tenorinyears", "tenoryrs", "maturityyears", "years", "term",
+                    "tenoryear"),
     "zcy_semi": ("zcysemi", "zcycsemiannual", "zerocouponyieldsemiannual", "zcycsemi", "zerosemi",
-                 "zcycsemiannualised", "semiannualzcyc"),
+                 "zcycsemiannualised", "semiannualzcyc", "zerocouponsemiannual"),
     "zcy_annual": ("zcyannual", "zcycannualised", "zerocouponyieldannualised", "zcycannual",
-                   "zeroannual", "annualisedzcyc", "zcycannualized"),
-    "par_semi": ("parsemi", "parcurvesemiannual", "paryieldsemiannual", "parsemiannual", "semiannualpar"),
+                   "zeroannual", "annualisedzcyc", "zcycannualized", "zerocouponannualized"),
+    # FBIL heads its par curve "YTM% p.a.(Semi-Annual)" -- the same words it
+    # uses for a bond's own YTM, which is why the par spellings only ever get
+    # looked up against a ZCYC file.
+    "par_semi": ("parsemi", "parcurvesemiannual", "paryieldsemiannual", "parsemiannual", "semiannualpar",
+                 "ytmpasemiannual"),
     "par_annual": ("parannual", "parcurveannualised", "paryieldannualised", "parannualised",
-                   "annualisedpar", "parannualized"),
+                   "annualisedpar", "parannualized", "ytmpaannualized"),
 }
 
 SDL_BOND_ALIASES: dict[str, tuple[str, ...]] = {
     **{k: v for k, v in BOND_ALIASES.items() if k in ("isin", "desc", "coupon", "maturity")},
-    "market_price": ("marketprice", "price", "cleanprice", "valuationprice", "priceper100"),
+    "market_price": ("marketprice", "price", "cleanprice", "valuationprice", "priceper100", "pricers"),
 }
 
 # Filename fragments that identify each raw file's role. Checked in order, and
@@ -312,6 +339,14 @@ def parse_bonds(path: Path, valuation_date) -> pd.DataFrame:
     # fallback for NaN values, but a missing column would raise a KeyError.
     df["volume"] = _to_number(df["volume"]) if "volume" in df.columns else np.nan
 
+    # Drop floating-rate and inflation-indexed bonds. Their published YTM is
+    # not a fixed-coupon YTM, so they cannot price off a nominal zero curve;
+    # left in, five FRBs would drag the 2-9 year segment with yields that mean
+    # something else entirely. The remark column is FBIL's own flag.
+    if "remark" in df.columns:
+        flag = df["remark"].astype(str).str.lower()
+        df = df[~flag.str.contains("|".join(FLOATER_REMARKS), na=False)]
+
     df = df.drop_duplicates(subset="isin", keep="first")
     d = to_date(valuation_date)
     df = df[pd.to_datetime(df["maturity"]).dt.date > d].reset_index(drop=True)
@@ -350,12 +385,19 @@ def parse_tbills(path: Path) -> pd.DataFrame:
 
 
 def parse_zcyc(path: Path, kind: str) -> pd.DataFrame:
-    """FBIL published ZCYC + par curve -> the frozen `fbil_zcyc` schema."""
+    """FBIL published ZCYC (+ par curve where there is one) -> the `fbil_zcyc` schema.
+
+    The par columns are optional: FBIL publishes a G-Sec par curve but no SDL
+    one. A missing par column becomes an empty column rather than a computed
+    one -- the par yields implied by the published zeros are a derivation, not
+    a publication, and this file is only ever read as "what FBIL said".
+    """
     raw = _read_any(Path(path))
     table = _apply_header(raw, _header_row(raw, ZCYC_ALIASES))
-    df = _map_columns(table, ZCYC_ALIASES, tuple(SCHEMAS[kind]), Path(path).name)
+    required = tuple(c for c in SCHEMAS[kind] if c not in OPTIONAL_ZCYC_COLUMNS)
+    df = _map_columns(table, ZCYC_ALIASES, required, Path(path).name)
     for col in SCHEMAS[kind]:
-        df[col] = _to_number(df[col])
+        df[col] = _to_number(df[col]) if col in df.columns else np.nan
     df = df.dropna(subset=["tenor_years"]).sort_values("tenor_years").reset_index(drop=True)
     df["tenor_years"] = df["tenor_years"].round(2)
     return df[SCHEMAS[kind]]
@@ -450,6 +492,8 @@ def _check_grid(df: pd.DataFrame, name: str, grid: tuple[float, float, float]) -
         raise ValueError(f"{name}: grid must run {start} to {stop}, got {t[0]} to {t[-1]}")
 
     for col in ("zcy_semi", "zcy_annual", "par_semi", "par_annual"):
+        if col in OPTIONAL_ZCYC_COLUMNS and df[col].isna().all():
+            continue    # FBIL published no par curve for this benchmark.
         _check_percent(df[col], f"{name}.{col}")
     if (df["zcy_annual"] < df["zcy_semi"]).any():
         raise ValueError(f"{name}: annualised rate below the semiannual one -- columns look swapped")
@@ -729,11 +773,15 @@ def write_sample_raw(raw_dir: str | Path = "data/raw", valuation_date: str = "20
         )
 
     paths["fbil_zcyc"] = raw_dir / "fbil_gsec_zcyc_SAMPLE.csv"
-    zcyc_frame(40.0, lambda t: 0.02 * np.sin(np.asarray(t, dtype=float) / 6.0)).to_csv(paths["fbil_zcyc"], index=False)
+    zcyc_frame(ZCYC_GRID[1], lambda t: 0.02 * np.sin(np.asarray(t, dtype=float) / 6.0)).to_csv(
+        paths["fbil_zcyc"], index=False
+    )
 
     paths["fbil_sdl_zcyc"] = raw_dir / "fbil_sdl_zcyc_SAMPLE.csv"
     # SDLs trade at a spread over the sovereign curve; ~40bp widening with tenor.
-    zcyc_frame(14.0, lambda t: 0.30 + 0.012 * np.asarray(t, dtype=float)).to_csv(paths["fbil_sdl_zcyc"], index=False)
+    zcyc_frame(SDL_ZCYC_GRID[1], lambda t: 0.30 + 0.012 * np.asarray(t, dtype=float)).to_csv(
+        paths["fbil_sdl_zcyc"], index=False
+    )
 
     # --- SDL valuation file, in html this time so that reader is exercised too.
     sdl_rows = []
