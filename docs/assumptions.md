@@ -37,7 +37,7 @@ comparison against FBIL's published curve was run, per the honesty rule.
 | Solver | All node rates solved simultaneously (`least_squares`) so every input reprices at once | Sequential bootstrap kept as a disclosed fallback |
 | Extrapolation | Flat beyond the longest input bond, and below the shortest | Cubic extrapolation past 40y is unstable on no information |
 | Par yield | `par(T) = 2(1 - DF(T)) / sum(DF)`, first coupon accrued over a short stub at odd quarter-year tenors | Collapses to the standard formula at whole half-years |
-| Output grid | 0.25 to 40 years, step 0.25 (160 points), semiannual + annualised + par | Matches the frozen `fbil_zcyc` schema |
+| Output grid | 0.25 to 50 years, step 0.25 (200 points), semiannual + annualised + par | Matches the grid FBIL actually publishes — see "Grid range" under A's section |
 
 **Auto-checks enforced on every run** (the pipeline raises and stops if any fail):
 max repricing error < 1e-6 per 100 face; second derivative continuous at every
@@ -49,7 +49,8 @@ knot; discount factors strictly decreasing across the whole output grid.
    **approximation of** that approach, not a reimplementation of it.
 2. No public-holiday calendar; T+1 settlement rolls over weekends only.
 3. Flat extrapolation beyond the longest input bond — the far end is asserted
-   rather than fitted.
+   rather than fitted. On the 2026-09-11 file the longest G-Sec matures in
+   2076, so the 50y grid point is inside the fitted range, not extrapolated.
 4. Published YTMs of non-traded ISINs already embed FBIL's own model, so the
    inputs are partly circular with the curve we compare against.
 5. The sequential fallback solver reprices to roughly 1e-3 rather than 1e-6; if
@@ -64,14 +65,14 @@ B's and C's sections above stand as written.
 
 | Decision | Choice | Note |
 |---|---|---|
-| Valuation date D | **2026-09-18** (Friday) | Settlement 2026-09-21, T+1 per B's convention |
+| Valuation date D | **2026-09-11** (Friday) | Settlement 2026-09-14, T+1 per B's convention. Newest day on which all five FBIL publications were in the free public archive when the data was pulled |
 | Rate units in `data/clean/` | Percent throughout; `6.05` means 6.05% | The loader never divides a rate by 100 — conversion happens at point of use |
 | Dates in `data/clean/` | ISO `YYYY-MM-DD` strings | Raw files are parsed `dayfirst=True` (FBIL quotes 14/05/2031) |
 | Money in `data/clean/` | Absolute rupees; `price` and `market_price` per 100 face | |
 | Raw file identification | By role keyword in the filename, not by position in the directory | A real download always takes priority over a `*_SAMPLE` file of the same role |
 | Column identification | Alias table, never column position | An unmatched required column raises; nothing is silently dropped or renamed |
 | Bad input handling | Every validation **raises**; none warn | Duplicate ISINs, matured bonds, rates already divided by 100, gaps in the published grid |
-| Published grid check | Step and endpoints asserted, **row count is not** | 0.25→40.00 in 0.25 steps is 160 points; the contract's "159 rows" does not match its own step and endpoints |
+| Published grid check | Step and endpoints asserted, **row count is not** | Both are read off FBIL's files into `ZCYC_GRID` / `SDL_ZCYC_GRID`; the contract's "159 rows to 40y" matched neither its own arithmetic nor the publication |
 | T-bill tenors | Nearest published bill's rate, carried onto the nominal tenor (7/365, 0.5, 1.0) | FBIL quotes 91D/182D/364D on some dates. Worst case this mis-times the 12M point by one day |
 | `bonds.csv` `volume` | Nullable, but the column always exists | `selection.py` has a documented NaN fallback; a missing *column* would raise |
 | Bonus SDL selection | Longest-dated SDL with residual maturity in (1, 14] years from settlement | The published SDL ZCYC stops at 14y, so a longer parent has no curve to discount off. Longest ⇒ most Coupon STRIPS to show |
@@ -106,3 +107,45 @@ DATA" watermark, and nothing produced from them may be quoted as a result.
    came from a 91D/182D/364D bill.
 4. The two SDL book values are constructed to straddle market value (see above),
    not observed.
+
+---
+
+## Data acquisition — where the numbers actually come from
+
+Pulled 2026-09-21 by `src/fetch_fbil.py` from FBIL's public archive at
+`https://www.fbil.org.in/wasdm`, the same API the public website uses. The free
+public tier lags the live benchmark by about a week; **2026-09-11** was the
+newest business day on which all five publications we need were available.
+Nothing here is behind a subscription and nothing was scraped from a logged-in
+session.
+
+| Clean CSV | FBIL publication | Workbook / sheet |
+|---|---|---|
+| `bonds.csv` | FBIL GOI Prices | `gsec_11092026.xlsx`, sheet `G-Sec` |
+| `fbil_zcyc.csv` (zero half) | FBIL GOI STRIPS and ZCYC | `strips_11092026.xlsx`, sheet `ZCYC` |
+| `fbil_zcyc.csv` (par half) | FBIL GOI Prices | `gsec_11092026.xlsx`, sheet `Par Yield` |
+| `fbil_sdl_zcyc.csv` | FBIL SDL ZCYC | `sdlzcyc_11092026.xlsx`, sheet `SDL_ZCYC` |
+| `sdl_bond.csv` | FBIL SDL/SGS Prices | `sdl_11092026.xlsx`, sheet `SDL` |
+| `tbills.csv` | FBIL T-bill rates | `/wasdm/tbill/fetchfiltered` JSON (`/tbill/download` returns HTTP 500 on the public tier) |
+
+Every byte FBIL served is kept unmodified in `data/raw/fbil_source/` under
+FBIL's own filenames. The role-named files in `data/raw/` are copies of those,
+except for two that are reshaped and **never recalculated**: the G-Sec ZCYC csv
+joins the two published halves of one curve on tenor, and the T-bill csv writes
+the published JSON out as a table.
+
+**What the real files changed, relative to what the interface contract assumed**
+
+| Assumed | Actually published | Consequence |
+|---|---|---|
+| G-Sec ZCYC runs 0.25→40.00 | 0.25→**50.00**, 200 points | `ZCYC_GRID` and `Curve.grid_stop` both moved to 50.0 — `compare()` requires a 1:1 join, so our grid has to match FBIL's |
+| Zero and par curves ship together | Published in **two different workbooks** | The fetcher joins them on tenor before the loader sees them |
+| SDL file carries a par curve | FBIL publishes **no SDL par curve** | `par_semi`/`par_annual` exist but are **empty** in `fbil_sdl_zcyc.csv`. They are not filled with par yields implied by the published zeros: that would be our derivation printed in a file the rest of the pipeline reads as "what FBIL said". Nothing consumes them — `compare()` works off `zcy_semi` |
+| Bond file carries volume / trade counts | Only ISIN, coupon, maturity, price, YTM, two remark columns | `bonds.csv.volume` is entirely NaN, so `selection.py` falls back to earliest-maturity for every long-end bucket. Our node set is therefore **not** liquidity-weighted the way FBIL's is |
+| — | Remark column flags **5 FRBs** | Dropped in `parse_bonds` (`FLOATER_REMARKS`): a floating-rate bond's quoted YTM is not a fixed-coupon YTM and cannot price off a nominal zero curve. 124 published rows → **119 bonds** |
+| — | Remark column flags **26 "Input Point"** ISINs | This is FBIL's own node set, published. We do not use it (our selection stays as locked above), but it is available in `data/raw/fbil_source/gsec_11092026.xlsx` if the team wants a node-selection comparison on the slide |
+
+**Refreshing the data.** `python -m src.fetch_fbil` takes the newest common
+date, `--date YYYY-MM-DD` takes a specific one, `--list` shows what is
+available. Re-run `build_clean_data`, `src.compare` and `src.ablation` with the
+same date afterwards.
