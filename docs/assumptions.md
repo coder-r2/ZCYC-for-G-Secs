@@ -77,7 +77,7 @@ B's and C's sections above stand as written.
 | `bonds.csv` `volume` | Nullable, but the column always exists | `selection.py` has a documented NaN fallback; a missing *column* would raise |
 | Bonus SDL selection | Longest-dated SDL with residual maturity in (1, 14] years from settlement | The published SDL ZCYC stops at 14y, so a longer parent has no curve to discount off. Longest ⇒ most Coupon STRIPS to show |
 | `face_stripped` | ₹5,00,00,000 (5 crore), validated as a whole multiple of ₹1 crore | |
-| SDL book-value scenarios | Scenario 1 = market value × 1.03, scenario 2 = market value × 0.97 | **Not market data.** Nothing publishes a book value; these are set to straddle market value so `min(book, market)` can be shown binding each way |
+| SDL book-value scenarios | Scenario 1 = **face value** (real, published). Scenario 2 = 0.97 × market value (`SCENARIO_2_BOOK_FRACTION`) | Book value is the holder's own carrying value — portfolio-, price- and depreciation-specific — and nobody publishes it. Scenario 1 uses face, which is real; this SDL is sub-par so `min()` picks market value and **scenario 1's STRIP prices are FBIL data end to end**. Scenario 2 is the **only assumed number in the pipeline**, needed because `min()`'s book-bound branch is otherwise unreachable. The loader asserts face > market value |
 | `compare()` units | No unit conversion — both grids are already percent | The only `×100` converts percentage points to basis points |
 | `compare()` grid join | Inner join on `tenor_years` rounded to 2dp, asserted 1:1 | Rounding is a tolerance on the join key, not a nearest-match join; a genuine mismatch raises |
 | `diff_bps` sign | Ours **minus** FBIL; positive means our curve is above FBIL's | |
@@ -105,8 +105,13 @@ DATA" watermark, and nothing produced from them may be quoted as a result.
    FBIL's weekly grouping by volume × number of trades.
 3. T-bill points use the nominal 7/365, 0.5 and 1.0 tenors even when the rate
    came from a 91D/182D/364D bill.
-4. The two SDL book values are constructed to straddle market value (see above),
-   not observed.
+4. **Exactly one number in this project is assumed rather than published:**
+   `book_value_scenario_2`. Book value is an accounting carrying value
+   specific to the holder and is not published by anyone. Scenario 1 avoids
+   the problem by using face value, so the scenario-1 STRIP table — the one to
+   quote — contains no assumed input. Scenario 2 exists only to show the
+   book-bound branch of RBI's `min(book, market)` rule and must be presented
+   as an illustration of the rule, never as a result.
 
 ---
 
