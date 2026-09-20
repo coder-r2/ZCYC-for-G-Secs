@@ -1,0 +1,17 @@
+spline_variable,boundary,thinning_90day,time_convention,rmse_bps
+zero,natural,True,act365,3.5463955481842357
+zero,natural,False,act365,3.5463955481842357
+logdf,natural,True,act365,3.568145811442668
+logdf,natural,False,act365,3.568145811442668
+zero,natural,True,halfyear,3.5826315660927026
+zero,natural,False,halfyear,3.5826315660927026
+logdf,natural,True,halfyear,3.6121418144555966
+logdf,natural,False,halfyear,3.6121418144555966
+logdf,not-a-knot,True,act365,3.7047165361252254
+logdf,not-a-knot,False,act365,3.7047165361252254
+logdf,not-a-knot,True,halfyear,3.720120275550447
+logdf,not-a-knot,False,halfyear,3.720120275550447
+zero,not-a-knot,True,act365,3.728016729708131
+zero,not-a-knot,False,act365,3.728016729708131
+zero,not-a-knot,True,halfyear,3.7319205118547214
+zero,not-a-knot,False,halfyear,3.7319205118547214
