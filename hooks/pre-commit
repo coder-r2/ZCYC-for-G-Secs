@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Blocks committing planning/coordination docs and instructor material.
+# This is a defense-in-depth backstop on top of .gitignore: .gitignore stops
+# these files from being staged by an accidental `git add .`, but it can be
+# bypassed with `git add -f`. This hook catches that case too.
+#
+# Installed once per clone with: git config core.hooksPath hooks
+# (see git-instructions.md Section 1)
+
+blocked_patterns=(
+  '^final-parallel-team-plan\.md$'
+  '^technical-schema\.md$'
+  '^git-setup-plan\.md$'
+  '^git-instructions\.md$'
+  '^team-plan\.md$'
+  '^slide-notes(-[abc])?\.md$'
+  '^problem_statement/'
+)
+
+staged_files=$(git diff --cached --name-only)
+blocked_found=""
+
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  for pattern in "${blocked_patterns[@]}"; do
+    if [[ "$file" =~ $pattern ]]; then
+      blocked_found="${blocked_found}
+  ${file}"
+    fi
+  done
+done <<< "$staged_files"
+
+if [ -n "$blocked_found" ]; then
+  echo "COMMIT BLOCKED — these files must never be committed to this repo:" >&2
+  echo "$blocked_found" >&2
+  echo "" >&2
+  echo "Unstage them with: git restore --staged <file>" >&2
+  exit 1
+fi
+
+exit 0
