@@ -1,0 +1,26 @@
+# Planning / coordination docs — never pushed, shared directly instead
+final-parallel-team-plan.md
+technical-schema.md
+git-setup-plan.md
+git-instructions.md
+team-plan.md
+slide-notes-a.md
+slide-notes-b.md
+slide-notes-c.md
+slide-notes.md
+
+# Assignment materials — instructor-provided, not our work product
+problem_statement/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Large raw downloads, only if they turn out to be huge binary files
+# data/raw/*.xlsx
