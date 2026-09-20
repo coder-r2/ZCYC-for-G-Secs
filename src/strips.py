@@ -21,10 +21,12 @@ from __future__ import annotations
 from typing import Callable
 
 import pandas as pd
+from scipy.interpolate import CubicSpline
 
-from src.bond import coupon_dates, to_date
+from src.bond import accrued_30_360, coupon_dates, to_date
 
 TIME_CONVENTIONS = ("act365", "half_year")
+SDL_MAX_RESIDUAL_YEARS = 14.0
 
 
 def _implied_spot_rate(discount_factor: float, t_years: float) -> float:
@@ -145,3 +147,73 @@ def strip_and_price(
     out["normalized_value"] = factor * out["pv"]
     out["price_per_100"] = out["normalized_value"] / out["cashflow"] * 100.0
     return out
+
+
+# ---------------------------------------------------------------------------
+# C2 -- bonus SDL pricing (SPEC.md Section 6 / technical-schema.md Section 6.5)
+# ---------------------------------------------------------------------------
+
+
+def build_sdl_discount_function(sdl_zcyc: pd.DataFrame) -> Callable[[float], float]:
+    """t (years) -> discount factor, from FBIL's published SDL ZCYC.
+
+    Cubic-spline interpolates ``zcy_semi`` (percent -> decimal at the
+    boundary, per technical-schema.md Sec 1) over ``tenor_years``, then
+    applies the standard semiannual DF formula. Flat beyond the published
+    grid (0.25-14y) -- mirrors curve.py's own extrapolation policy, needed
+    here because a cash flow can land just inside settle, below the grid's
+    0.25y floor.
+    """
+    t = sdl_zcyc["tenor_years"].to_numpy(dtype=float)
+    z = sdl_zcyc["zcy_semi"].to_numpy(dtype=float) / 100.0
+    spline = CubicSpline(t, z, bc_type="natural")
+    t_min, t_max = float(t.min()), float(t.max())
+    z_min, z_max = float(z[0]), float(z[-1])
+
+    def df_func(t_years: float) -> float:
+        if t_years <= t_min:
+            z_t = z_min
+        elif t_years >= t_max:
+            z_t = z_max
+        else:
+            z_t = float(spline(t_years))
+        return (1.0 + z_t / 2.0) ** (-2.0 * t_years)
+
+    return df_func
+
+
+def price_sdl(sdl_bond_row, sdl_zcyc: pd.DataFrame, settle, book_value_col: str) -> pd.DataFrame:
+    """Price one book-value scenario for the bonus SDL (SPEC.md Section 6).
+
+    sdl_bond_row: a row from sdl_bond.csv (technical-schema.md Sec 2.4).
+    sdl_zcyc: fbil_sdl_zcyc.csv, loaded -- the discount curve, NOT the
+        headline G-Sec curve (the whole point of the bonus scope decision is
+        we borrow FBIL's published SDL curve rather than building our own).
+    book_value_col: "book_value_scenario_1" or "book_value_scenario_2".
+
+    market_value = market_price + accrued_30_360(...) (dirty), scaled to
+    face_stripped -- reuses bond.accrued_30_360 directly (coupon passed as
+    PERCENT, matching both that function's own convention and strip_and_price's
+    -- see C_status.md divergence tracker D1/D2, this is not a coincidence
+    worth "fixing").
+    """
+    coupon = float(sdl_bond_row["coupon"])
+    maturity = to_date(sdl_bond_row["maturity"])
+    settle_d = to_date(settle)
+    residual_years = (maturity - settle_d).days / 365.0
+    if residual_years > SDL_MAX_RESIDUAL_YEARS:
+        raise ValueError(
+            f"SDL residual maturity {residual_years:.2f}y exceeds the "
+            f"{SDL_MAX_RESIDUAL_YEARS}y SDL ZCYC eligibility limit"
+        )
+
+    face = float(sdl_bond_row["face_stripped"])
+    dirty_per_100 = float(sdl_bond_row["market_price"]) + accrued_30_360(coupon, maturity, settle_d)
+    market_value = dirty_per_100 * (face / 100.0)
+    book_value = float(sdl_bond_row[book_value_col])
+
+    parent = {"coupon": coupon, "maturity": maturity}
+    df_func = build_sdl_discount_function(sdl_zcyc)
+    return strip_and_price(
+        parent, face, settle_d, df_func, book_value, market_value, time_convention="act365"
+    )

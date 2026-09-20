@@ -92,7 +92,7 @@ def test_annex4_single_parent_normalization():
     # Period 13 is split across a coupon row (6.15) + a principal row (100)
     # in our output -- combined, they must match the fixture's single
     # period-13 line (106.15 cashflow, 67.3029 pv, 63.1606 normalized).
-    period13_cashflow, _, period13_cf, _, period13_pv, period13_norm = ANNEX4_ROWS[12]
+    _, _, period13_cf, _, period13_pv, period13_norm = ANNEX4_ROWS[12]
     last_coupon = coupon_rows.iloc[12]
     principal = result[result["type"] == "principal"].iloc[0]
     assert last_coupon["cashflow"] + principal["cashflow"] == pytest.approx(period13_cf, abs=0.01)
@@ -110,7 +110,7 @@ def test_annex4_single_parent_normalization():
 # ---------------------------------------------------------------------------
 
 
-def _flat_df_func(_t_years: float) -> float:
+def _flat_df_func(_: float) -> float:
     return 1.0
 
 
