@@ -54,3 +54,55 @@ knot; discount factors strictly decreasing across the whole output grid.
    inputs are partly circular with the curve we compare against.
 5. The sequential fallback solver reprices to roughly 1e-3 rather than 1e-6; if
    it is ever the path taken, that must be disclosed on the validation slide.
+
+---
+
+## Data, comparison and ablation (A) — locked
+
+Appended by A. Covers `data_loader.py`, `compare.py` and `ablation.py` only;
+B's and C's sections above stand as written.
+
+| Decision | Choice | Note |
+|---|---|---|
+| Valuation date D | **2026-09-18** (Friday) | Settlement 2026-09-21, T+1 per B's convention |
+| Rate units in `data/clean/` | Percent throughout; `6.05` means 6.05% | The loader never divides a rate by 100 — conversion happens at point of use |
+| Dates in `data/clean/` | ISO `YYYY-MM-DD` strings | Raw files are parsed `dayfirst=True` (FBIL quotes 14/05/2031) |
+| Money in `data/clean/` | Absolute rupees; `price` and `market_price` per 100 face | |
+| Raw file identification | By role keyword in the filename, not by position in the directory | A real download always takes priority over a `*_SAMPLE` file of the same role |
+| Column identification | Alias table, never column position | An unmatched required column raises; nothing is silently dropped or renamed |
+| Bad input handling | Every validation **raises**; none warn | Duplicate ISINs, matured bonds, rates already divided by 100, gaps in the published grid |
+| Published grid check | Step and endpoints asserted, **row count is not** | 0.25→40.00 in 0.25 steps is 160 points; the contract's "159 rows" does not match its own step and endpoints |
+| T-bill tenors | Nearest published bill's rate, carried onto the nominal tenor (7/365, 0.5, 1.0) | FBIL quotes 91D/182D/364D on some dates. Worst case this mis-times the 12M point by one day |
+| `bonds.csv` `volume` | Nullable, but the column always exists | `selection.py` has a documented NaN fallback; a missing *column* would raise |
+| Bonus SDL selection | Longest-dated SDL with residual maturity in (1, 14] years from settlement | The published SDL ZCYC stops at 14y, so a longer parent has no curve to discount off. Longest ⇒ most Coupon STRIPS to show |
+| `face_stripped` | ₹5,00,00,000 (5 crore), validated as a whole multiple of ₹1 crore | |
+| SDL book-value scenarios | Scenario 1 = market value × 1.03, scenario 2 = market value × 0.97 | **Not market data.** Nothing publishes a book value; these are set to straddle market value so `min(book, market)` can be shown binding each way |
+| `compare()` units | No unit conversion — both grids are already percent | The only `×100` converts percentage points to basis points |
+| `compare()` grid join | Inner join on `tenor_years` rounded to 2dp, asserted 1:1 | Rounding is a tolerance on the join key, not a nearest-match join; a genuine mismatch raises |
+| `diff_bps` sign | Ours **minus** FBIL; positive means our curve is above FBIL's | |
+| **`max_diff_bps`** | **Maximum ABSOLUTE difference** | The contract left the sign open. Our curve crosses FBIL's, so a signed maximum would report the smaller of the two errors as the headline |
+| Empty comparison segment | `NaN`, not an error | A curve that stops at 10y has nothing to report above 14y — a fact about the data, not a failure |
+| Ablation failures | Row kept with `rmse_bps = NaN`, sorted last | `build_zcyc` raises by design when its auto-checks fail; dropping the row would break the contract's 16-row table |
+| Ablation status | Reported as **sensitivity**, never as model selection | The headline curve keeps the defaults locked above, chosen before any comparison was run. A better-scoring config is disclosed on the slide; it does not become the headline |
+
+**Provenance — the one thing to check before submitting**
+
+`data/clean/SOURCE.md` is written by the loader on every run and records which
+raw file produced each clean CSV. It must read `Provenance: **FBIL**` in the
+submitted work. While it reads `SAMPLE`, the numbers come from generated
+stand-in files, the comparison charts carry a "SAMPLE DATA — NOT FBIL PUBLISHED
+DATA" watermark, and nothing produced from them may be quoted as a result.
+
+**Known simplifications vs the official methodology (A's stages)**
+
+1. We feed FBIL's **published per-ISIN YTMs** into the model. FBIL builds its
+   own curve from trade-level VWAY under Level 1/2/3 input rules that need the
+   trade tape. The published YTM of a non-traded ISIN is itself *model YTM +
+   adjustment factor*, so our inputs are **partly circular** with the curve we
+   are comparing against. This is the headline caveat of the whole comparison.
+2. Node selection is our own 90-day greedy scan plus long-end buckets, not
+   FBIL's weekly grouping by volume × number of trades.
+3. T-bill points use the nominal 7/365, 0.5 and 1.0 tenors even when the rate
+   came from a 91D/182D/364D bill.
+4. The two SDL book values are constructed to straddle market value (see above),
+   not observed.
