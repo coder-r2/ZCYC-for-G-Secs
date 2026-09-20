@@ -36,3 +36,6 @@ Thumbs.db
 # real files at the same names. See C_status.md divergence D7.
 data/clean/sdl_bond.csv
 data/clean/fbil_sdl_zcyc.csv
+data/clean/bonds.csv
+data/clean/tbills.csv
+data/clean/fbil_zcyc.csv

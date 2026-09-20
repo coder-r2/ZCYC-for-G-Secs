@@ -1,0 +1,6 @@
+{
+  "max_repricing_error": 1.4210854715202004e-13,
+  "c2_continuity_ok": true,
+  "df_monotone_ok": true,
+  "solver_mode": "global"
+}
