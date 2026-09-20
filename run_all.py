@@ -10,22 +10,19 @@ Pipeline (SPEC.md Sec 7 / technical-schema.md Sec 0):
         -> strips.py (C)                -> STRIP prices for the bonus SDL
 
 data_loader.py has no frozen call signature (technical-schema.md only
-freezes the *schemas* it must produce, Sec 2) -- treated here as a
-precondition, not a step this script calls: this script starts by reading
-the already-clean CSVs, same as every other stage reads its predecessor's
-output.
+freezes the *schemas* it must produce, Sec 2) -- confirmed against A's real
+code: it's a separate CLI (`python -m src.data_loader --date ...`) that
+populates data/clean/*.csv ahead of time, not something this script calls.
+This script starts by reading those already-clean CSVs, same as every
+other stage reads its predecessor's output.
 
-As of this writing A hasn't pushed data_loader.py or compare.py yet, so the
-comparison stage below raises a clear ModuleNotFoundError naming exactly
-what's missing -- that's an accurate reflection of today's state, not a bug
-to work around here (PLAN.md Phase 3 / C_status.md). The curve and STRIPS
-stages are real and wired against B's actual code.
-
-A's separate ablation grid (A3) is NOT part of this single-command pipeline
--- final-parallel-team-plan.md describes it as its own "unattended script",
-and it doesn't appear in the Sec 7 pipeline diagram either. It still has to
-be run once (producing outputs/ablation_results.csv) before packaging; the
-smoke test below checks for it but doesn't run it.
+A's real compare.py exposes write_comparison_outputs() (compare() + both
+plots + table + summary, one call, exact frozen filenames) and ablation.py
+exposes run_ablation()/write_ablation_results() the same composable way --
+both wired in below. compare()'s own _normalise_ours() already accepts
+either zero_semi or zcy_semi, so no column rename is needed on this side
+either (see C_status.md D3/D9/D11 -- all resolved once A's real code
+existed to check against, no changes needed to A's or B's code).
 """
 
 from __future__ import annotations
@@ -51,8 +48,6 @@ OUTPUTS_MANIFEST = [
     "strips_table_scenario1.csv",
     "strips_table_scenario2.csv",
 ]
-
-COMPARISON_TENORS = [0.25, 0.5, 1, 2, 3, 5, 7, 10, 14, 20, 30, 40]
 
 
 def stage_curve(settle):
@@ -100,29 +95,26 @@ def stage_curve(settle):
     return grid
 
 
-def stage_compare(grid: pd.DataFrame):
-    """A's stage: compare our grid against FBIL's published curve."""
-    from src.compare import compare
+def stage_compare(grid: pd.DataFrame, provenance: str):
+    """A's stage: compare our grid against FBIL's published curve, both
+    plots, table and summary -- all four frozen outputs in one call."""
+    from src.compare import write_comparison_outputs
 
     fbil_grid = pd.read_csv(DATA_CLEAN / "fbil_zcyc.csv")
-    # B's Curve.grid() already outputs FBIL-matching zcy_* column names
-    # directly, rather than the zero_* names technical-schema.md Sec 5.2
-    # documents as compare()'s expected input -- renamed here to match the
-    # frozen contract's text. See C_status.md divergence D3.
-    our_grid = grid.rename(columns={"zcy_semi": "zero_semi", "zcy_annual": "zero_annual"})
+    return write_comparison_outputs(grid, fbil_grid, outputs_dir=OUTPUTS, provenance=provenance)
 
-    metrics_df, summary = compare(our_grid, fbil_grid)
 
-    metrics_df[metrics_df["tenor_years"].isin(COMPARISON_TENORS)].to_csv(
-        OUTPUTS / "comparison_table.csv", index=False
-    )
-    with open(OUTPUTS / "comparison_summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+def stage_ablation(settle):
+    """A's stage: the 16-configuration sensitivity grid."""
+    from src.ablation import run_ablation, write_ablation_results
 
-    # comparison_overlay.png / comparison_diff_bps.png are A's own plots --
-    # no frozen function produces them, so they aren't generated here. See
-    # C_status.md divergence D9.
-    return metrics_df, summary
+    bonds_df = pd.read_csv(DATA_CLEAN / "bonds.csv")
+    tbills_df = pd.read_csv(DATA_CLEAN / "tbills.csv")
+    fbil_grid = pd.read_csv(DATA_CLEAN / "fbil_zcyc.csv")
+
+    results, failures = run_ablation(bonds_df, tbills_df, fbil_grid, settle, verbose=False)
+    write_ablation_results(results, outputs_dir=OUTPUTS)
+    return results, failures
 
 
 def stage_strips(settle):
@@ -143,10 +135,7 @@ def smoke_test_outputs():
     missing = [f for f in OUTPUTS_MANIFEST if not (OUTPUTS / f).exists()]
     if missing:
         raise FileNotFoundError(
-            "run_all.py finished, but these outputs/ files are still missing: "
-            + ", ".join(missing)
-            + ". (ablation_results.csv comes from A's separate ablation script, "
-            "not this pipeline -- run that too before packaging.)"
+            "run_all.py finished, but these outputs/ files are still missing: " + ", ".join(missing)
         )
 
 
@@ -156,14 +145,20 @@ def main():
     args = parser.parse_args()
 
     from src.bond import settlement_date
+    from src.data_loader import clean_data_provenance
 
     settle = settlement_date(args.date)
+    provenance = clean_data_provenance(DATA_CLEAN)
 
     grid = stage_curve(settle)
-    stage_compare(grid)
+    stage_compare(grid, provenance)
+    stage_ablation(settle)
     stage_strips(settle)
     smoke_test_outputs()
+
     print(f"Pipeline complete for valuation date {args.date} (settle {settle}). See outputs/.")
+    if provenance != "FBIL":
+        print(f"WARNING: data/clean/ provenance is '{provenance}', not FBIL -- do not submit these outputs.")
 
 
 if __name__ == "__main__":

@@ -29,13 +29,3 @@ Thumbs.db
 
 # Large raw downloads, only if they turn out to be huge binary files
 # data/raw/*.xlsx
-
-# C's local stub data for data/clean/ (A owns this folder -- these are
-# hand-built placeholders to unblock Phase 2 dev before A pushes the real
-# FBIL download; committing them risks a straight path conflict with A's
-# real files at the same names. See C_status.md divergence D7.
-data/clean/sdl_bond.csv
-data/clean/fbil_sdl_zcyc.csv
-data/clean/bonds.csv
-data/clean/tbills.csv
-data/clean/fbil_zcyc.csv
