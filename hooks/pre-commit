@@ -14,6 +14,8 @@ blocked_patterns=(
   '^git-instructions\.md$'
   '^team-plan\.md$'
   '^slide-notes(-[abc])?\.md$'
+  '^SPEC(-[A-Za-z]+)?\.md$'
+  '^git-for-Person[A-Za-z]*\.md$'
   '^problem_statement/'
 )
 
