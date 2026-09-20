@@ -5,15 +5,11 @@ normalize their present values to min(book value, market value), per RBI's
 Frozen signature: ``strip_and_price()`` -- see SPEC.md Section 4 /
 technical-schema.md Section 6.1.
 
-Units note (deliberate deviation from technical-schema.md Section 1 -- see
-the docstring below): ``parent["coupon"]`` here is the coupon rate as
-PERCENT (e.g. 9.39, not 0.0939), even though technical-schema.md Section 6.1
-labels it DECIMAL. This isn't a choice -- it's what's required to reproduce
-both frozen fixtures (Annex 3 and Annex 4) to their stated tolerances; the
-worked examples in technical-schema.md Section 6.4 / SPEC.md Section 5.2
-only come out to 2,347,500 (not 23,475) if 9.39 is used directly. Flagged as
-a documentation inconsistency to fix under Section 11 change control, not
-silently "corrected" here since that would fail both fixtures.
+Units note: ``parent["coupon"]`` is the coupon rate as PERCENT (e.g. 9.39,
+not 0.0939) -- matches the worked Annex 3/4 examples in technical-schema.md
+Section 6.4 exactly. (Section 6.1 briefly mislabeled this DECIMAL; fixed
+under Section 11 change control on 2026-09-21 -- this module's behavior
+never changed, only the doc's annotation.)
 """
 
 from __future__ import annotations
