@@ -2,18 +2,18 @@
 
 Fill in as each decision is confirmed at kickoff. This file is a submission deliverable — keep it accurate, it's what a grader reads to understand our modeling choices.
 
-- [ ] Valuation date (D)
-- [ ] Input data source (published YTMs/prices, trade-level assumed unavailable)
-- [ ] Settlement convention
-- [ ] Accrued interest convention
-- [ ] Compounding convention
-- [ ] Time-to-cashflow convention (headline vs ablation alternative)
-- [ ] Spline variable + boundary condition (headline vs ablation alternatives)
-- [ ] Output grid range/step
-- [ ] Bonus discounting curve (SDL ZCYC) and how it's applied
-- [ ] Bonus SDL selection criteria
-- [ ] Parent value convention used in STRIP normalisation
-- [ ] Known simplifications vs the official FBIL/RBI methodology (state each one explicitly)
+- [x] Valuation date (D) — 2026-09-11, see A's section
+- [x] Input data source (published YTMs/prices, trade-level assumed unavailable) — A's section
+- [x] Settlement convention — T+1, rolled over weekends; B's section
+- [x] Accrued interest convention — 30/360 bond basis; B's section
+- [x] Compounding convention — semiannual; B's section
+- [x] Time-to-cashflow convention (headline vs ablation alternative) — act365 headline, halfyear ablation; B's section
+- [x] Spline variable + boundary condition (headline vs ablation alternatives) — zero/natural headline; B's section
+- [x] Output grid range/step — 0.25 to 50 years, step 0.25; B's section
+- [x] Bonus discounting curve (SDL ZCYC) and how it's applied — published `fbil_sdl_zcyc.csv`, cubic-spline; C's section
+- [x] Bonus SDL selection criteria — longest-dated SDL with residual maturity in (1, 14]; A's section
+- [x] Parent value convention used in STRIP normalisation — `min(book_value, market_value)`; A's and C's sections
+- [x] Known simplifications vs the official FBIL/RBI methodology (state each one explicitly) — listed at the end of each of the three sections below
 
 ---
 
@@ -112,6 +112,35 @@ DATA" watermark, and nothing produced from them may be quoted as a result.
    quote — contains no assumed input. Scenario 2 exists only to show the
    book-bound branch of RBI's `min(book, market)` rule and must be presented
    as an illustration of the rule, never as a result.
+
+---
+
+## STRIPS and bonus SDL (C) — locked
+
+Appended by C. Covers `strips.py` only; A's and B's sections above stand as written.
+
+| Decision | Choice | Note |
+|---|---|---|
+| STRIP construction | One Coupon STRIP per remaining coupon date, plus one Principal STRIP | Per RBI's 2010 Stripping Guidelines para 15.2 |
+| Normalisation | `factor = min(book_value, market_value) / sum(PV of all STRIPS)`; every STRIP's PV scaled by that one factor | Per RBI para 15.2 |
+| Time convention | `act365` for all real pricing (bonus SDL); `"half_year"` (integer semiannual periods, with underscore) only to reproduce the Annex 3/4 textbook fixtures | `curve.py`'s own ablation convention is spelled `"halfyear"` (no underscore) — a different literal for a different function, not a typo |
+| Bonus discounting curve | `fbil_sdl_zcyc.csv` (FBIL's own published SDL ZCYC), cubic-spline interpolated on `zcy_semi`, flat beyond the published 0.25–14y grid | The *published* SDL curve, not the headline G-Sec curve — permitted by Stripping Guidelines para 13 ("if traded zero-coupon rates are not available, use FIMMDA/FBIL's published yields instead") |
+| Coupon dates for the SDL | The SDL's own actual semiannual coupon dates | RBI's guideline is written for GoI securities on the 2-Jan/2-Jul cycle; applying it to a state-issued SDL at all is this team's own extrapolation — the guidelines don't explicitly cover SDLs |
+| `strip_and_price()`'s `coupon` input | **Percent** (e.g. `7.47`), not decimal | The interface contract originally labelled this decimal; its own worked examples (Annex 3/4) only reproduce to tolerance with percent input — corrected 2026-09-21 |
+| SDL choice, book-value scenarios | Not C's decision — A's loader picks the bonus SDL and computes both `book_value_scenario_1`/`_2`; `strips.py` just applies `min(book_value, market_value)` to whatever the file provides | See A's section above for how the two scenarios are derived |
+
+**Known simplifications vs the official guidelines**
+
+1. RBI's Stripping Guidelines (2010) are written for Government of India dated
+   securities on the 2 Jan/2 Jul coupon cycle. Applying them to a State
+   Development Loan at all is this team's own extrapolation — the guidelines
+   don't explicitly cover SDLs. The SDL's actual coupon dates are used rather
+   than forcing the GoI cycle.
+2. HTM/AFS/HFT bank-accounting treatment (Stripping Guidelines paras 15.3–15.4)
+   is out of scope — a banking-book nuance, irrelevant to valuation-only work.
+3. No STRIPS ISIN/nomenclature generation and no reconstitution demo — the
+   guidelines cover both, neither is needed to price a single stripping
+   exercise.
 
 ---
 

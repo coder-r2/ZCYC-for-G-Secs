@@ -65,7 +65,7 @@ class CurveConfig:
     tbill_rate_basis: str = "semi"      # "semi" | "annual"
     reprice_tol: float = 1e-6           # per 100 face
     grid_start: float = 0.25
-    grid_stop: float = 40.0
+    grid_stop: float = 50.0    # matches the grid FBIL actually publishes (was 40.0, see docs/assumptions.md)
     grid_step: float = 0.25
 
     def __post_init__(self):
