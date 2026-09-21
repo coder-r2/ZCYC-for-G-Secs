@@ -60,6 +60,7 @@ class CurveConfig:
     time_convention: str = "act365"     # "act365" | "halfyear"
 
     min_gap_days: int = 90
+    follow_fbil_input_points: bool = False  # adopt FBIL's own "Input Point" node set
     solver: str = "auto"                # "global" | "sequential" | "auto"
     input_price_type: str = "clean"     # published bond price is clean
     tbill_rate_basis: str = "semi"      # "semi" | "annual"
@@ -445,7 +446,8 @@ def build_zcyc(bonds_df: pd.DataFrame, tbills: pd.DataFrame, settle, cfg: CurveC
     settle = to_date(settle)
 
     bonds_sel, tbills_sel, report = select_inputs(
-        bonds_df, tbills, settle, thin_90d=cfg.thin_90d, min_gap_days=cfg.min_gap_days
+        bonds_df, tbills, settle, thin_90d=cfg.thin_90d, min_gap_days=cfg.min_gap_days,
+        follow_fbil_input_points=cfg.follow_fbil_input_points,
     )
 
     instruments = _tbill_instruments(tbills_sel, cfg) + _bond_instruments(bonds_sel, settle, cfg)

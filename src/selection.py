@@ -35,6 +35,8 @@ LONG_BUCKETS = ((14, 18), (18, 22), (22, 26), (26, 30), (30, 34), (34, 1000))
 TBILL_TARGETS = (7 / 365, 0.5, 1.0)
 VOLUME_COLUMNS = ("volume", "traded_volume", "turnover", "liquidity")
 TRADES_COLUMNS = ("trades", "no_of_trades", "nos_trades", "num_trades", "n_trades")
+INPUT_POINT_COLUMNS = ("fbil_input_point", "input_point", "remark", "remark_1", "remark1")
+INPUT_POINT_LABEL = "input point"
 
 
 def residual_years(maturity, settle) -> float:
@@ -88,8 +90,46 @@ def selection_metric(df: pd.DataFrame) -> pd.Series | None:
     return df[volume].astype(float) * df[trades].astype(float)
 
 
-def _pick_one(group: pd.DataFrame, metric: pd.Series | None) -> pd.Series:
-    """Highest volume*trades in the group, falling back to earliest maturity."""
+def fbil_input_points(df: pd.DataFrame) -> pd.Series | None:
+    """Which ISINs FBIL itself used as model inputs, if the data says so.
+
+    FBIL's published G-Sec valuation file carries a "Remark 1" column whose
+    value is "Input Point" for the ISINs that went into its own cubic spline.
+    That is the outcome of the Level 1/2/3 qualification we cannot reproduce --
+    the trade counts behind it are not published, but the verdict is.
+
+    Returns a boolean Series, or None when the column is absent (A's cleaned
+    bonds.csv does not currently carry it, so this stays inert until it does).
+    """
+    column = _first_column(df, INPUT_POINT_COLUMNS)
+    if column is None:
+        return None
+    values = df[column]
+    if values.dtype == bool:
+        flags = values.fillna(False)
+    else:
+        # A nullable-string comparison yields NA (not False) for missing
+        # remarks, which is not safely truthy -- coerce before returning.
+        flags = (values.astype("string").str.strip().str.lower() == INPUT_POINT_LABEL).fillna(False)
+    return flags.astype(bool) if flags.any() else None
+
+
+def _pick_one(
+    group: pd.DataFrame,
+    metric: pd.Series | None,
+    input_points: pd.Series | None = None,
+) -> pd.Series:
+    """Pick one ISIN from a group.
+
+    Order of preference: an ISIN FBIL itself marked as an input point, then the
+    highest volume*trades, then the earliest maturity.
+    """
+    if input_points is not None:
+        marked = group.index[input_points.reindex(group.index).fillna(False)]
+        if len(marked) == 1:
+            return group.loc[marked[0]]
+        if len(marked) > 1:
+            group = group.loc[marked]
     if metric is not None:
         scores = metric.reindex(group.index)
         if scores.notna().any():
@@ -126,6 +166,7 @@ def select_bonds(
     settle,
     thin_90d: bool = True,
     min_gap_days: int = MIN_GAP_DAYS,
+    follow_fbil_input_points: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Thin the bond list to curve nodes.
 
@@ -139,6 +180,7 @@ def select_bonds(
     work = work.sort_values("residual_years").reset_index(drop=True)
 
     metric = selection_metric(work)
+    input_points = fbil_input_points(work)
     keep, reason, segment = {}, {}, {}
 
     for i, row in work.iterrows():
@@ -154,6 +196,28 @@ def select_bonds(
             segment[i] = "mid"
         else:
             segment[i] = "long"
+
+    if follow_fbil_input_points and input_points is not None:
+        # Adopt FBIL's published node set verbatim. This is the closest we can
+        # get to the Concept Note's qualification rules, but it makes the input
+        # set an output of the very model we compare against, so it is opt-in
+        # and reported separately rather than being the headline curve.
+        for i in work.index:
+            if segment[i] in ("matured", "short"):
+                continue
+            marked = bool(input_points.get(i, False))  # coerced to plain bool upstream
+            keep[i] = marked
+            reason[i] = (
+                f"{segment[i]} segment, marked 'Input Point' by FBIL"
+                if marked
+                else f"{segment[i]} segment, not an FBIL input point"
+            )
+        work["segment"] = [segment[i] for i in work.index]
+        work["kept"] = [keep.get(i, False) for i in work.index]
+        work["reason"] = [reason.get(i, "") for i in work.index]
+        report_cols = [c for c in ("isin", "desc", "coupon", "maturity", "residual_years", "segment", "kept", "reason") if c in work.columns]
+        selected = work[work["kept"]].drop(columns=["maturity_date", "kept", "reason"]).reset_index(drop=True)
+        return selected, work[report_cols].reset_index(drop=True)
 
     # 1-14y: "If two or more ISINs have dates of redemption differing by 90
     # days or less, only one of them will be selected as input into the model.
@@ -177,7 +241,7 @@ def select_bonds(
                 i for i in remaining
                 if (mid.loc[i, "maturity_date"] - anchor_date).days <= min_gap_days
             ]
-            winner = _pick_one(mid.loc[window], metric).name if len(window) > 1 else anchor
+            winner = _pick_one(mid.loc[window], metric, input_points).name if len(window) > 1 else anchor
             keep[winner] = True
             reason[winner] = (
                 "mid segment, no other ISIN within 90 days"
@@ -203,7 +267,7 @@ def select_bonds(
         bucket = long[(long["residual_years"] > lo) & (long["residual_years"] <= hi)]
         if len(bucket) == 0:
             continue
-        pick = _pick_one(bucket, metric)
+        pick = _pick_one(bucket, metric, input_points)
         keep[pick.name], reason[pick.name] = True, f"long segment, representative of {lo}-{hi}y bucket"
     if len(long) > 0:
         terminal = long.sort_values("residual_years").index[-1]
@@ -224,8 +288,12 @@ def select_inputs(
     settle,
     thin_90d: bool = True,
     min_gap_days: int = MIN_GAP_DAYS,
+    follow_fbil_input_points: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Full input set for the bootstrap: ``(bonds_sel, tbills_sel, report)``."""
-    bonds_sel, report = select_bonds(bonds, settle, thin_90d=thin_90d, min_gap_days=min_gap_days)
+    bonds_sel, report = select_bonds(
+        bonds, settle, thin_90d=thin_90d, min_gap_days=min_gap_days,
+        follow_fbil_input_points=follow_fbil_input_points,
+    )
     tbills_sel = select_tbills(tbills)
     return bonds_sel, tbills_sel, report
