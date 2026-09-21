@@ -13,12 +13,13 @@ pip install -r requirements.txt
 ## How to run
 
 ```bash
-python run_all.py --date YYYY-MM-DD
+python -m src.data_loader --date YYYY-MM-DD   # builds data/clean/*.csv from data/raw/
+python run_all.py --date YYYY-MM-DD           # curve -> comparison -> ablation -> STRIPS
 ```
 
-Runs the full pipeline: `data/clean/*.csv` → curve → comparison → STRIPS, and writes every table/plot in `outputs/`. `--date` is the valuation date; settlement is computed as T+1 (rolled over weekends).
+`data/clean/*.csv` are already committed in this repo (built from the raw FBIL files under `data/raw/`), so the first command is only needed if you want to rebuild them from scratch or re-run against a different date. `data_loader.py` does not hit the network — it reads the raw FBIL exports already sitting in `data/raw/`.
 
-`data/clean/*.csv` must already exist before running — they're produced by the data-cleaning step, not by `run_all.py` itself. The ablation grid (`outputs/ablation_results.csv`) is also a separate, unattended script, run once ahead of packaging rather than as part of this single command.
+`run_all.py` runs the full pipeline: `data/clean/*.csv` → curve → comparison → ablation → STRIPS, and writes every table/plot in `outputs/`. `--date` is the valuation date; settlement is computed as T+1 (rolled over weekends).
 
 ## Tests
 
@@ -50,5 +51,5 @@ presentation/         final slide deck
 |---|---|
 | `curve_grid.csv`, `curve_plot.png`, `repricing_checks.json` | curve engine |
 | `comparison_table.csv`, `comparison_summary.json`, `comparison_overlay.png`, `comparison_diff_bps.png` | comparison vs FBIL |
-| `ablation_results.csv` | separate ablation script (run once, not by `run_all.py`) |
+| `ablation_results.csv` | 16-configuration sensitivity grid |
 | `strips_table_scenario1.csv`, `strips_table_scenario2.csv` | bonus SDL STRIP pricing, two book-value scenarios |
