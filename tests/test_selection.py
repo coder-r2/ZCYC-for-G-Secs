@@ -5,7 +5,13 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-from src.selection import parse_tenor, select_bonds, select_inputs, select_tbills
+from src.selection import (
+    fbil_input_points,
+    parse_tenor,
+    select_bonds,
+    select_inputs,
+    select_tbills,
+)
 
 SETTLE = date(2026, 9, 21)
 
@@ -152,3 +158,133 @@ class TestSelectInputs:
         assert len(tbills_sel) == 3
         assert len(report) == len(synthetic_bonds)
         assert bonds_sel["residual_years"].is_monotonic_increasing
+
+
+class TestAgainstConceptNoteIllustration:
+    """The worked example from the Concept Note on Revised G-Sec Valuation
+    Methodology (analysis dated 20 Nov 2019), right-hand column: which ISINs
+    survive once securities redeeming within 90 days of one another are grouped.
+
+    The document does not publish the volume*trades figures behind its picks, so
+    the liquidity column here is set to agree with its stated winners. What the
+    test pins is the grouping -- how many nodes survive and which windows they
+    fall in -- which is the part the document fully determines.
+    """
+
+    ROWS = [
+        ("7.37", "2023-04-16", True), ("7.16", "2023-05-20", False), ("6.17", "2023-06-12", False),
+        ("8.83", "2023-11-25", False), ("7.68", "2023-12-15", False), ("7.32", "2024-01-28", True),
+        ("7.35", "2024-06-22", True), ("8.40", "2024-07-28", False), ("6.18", "2024-11-04", True),
+        ("9.15", "2024-11-14", False), ("8.20", "2025-09-24", True),
+    ]
+    ANALYSIS_DATE = "2019-11-20"
+
+    def _frame(self, with_volume: bool):
+        return pd.DataFrame([
+            {"isin": f"IN{i}", "desc": f"{c}% GS", "coupon": float(c),
+             "maturity": pd.Timestamp(d), "price": 100.0, "ytm": 6.0,
+             **({"volume": 900.0 if sel else 100.0, "trades": 5} if with_volume else {})}
+            for i, (c, d, sel) in enumerate(self.ROWS)
+        ])
+
+    def test_number_of_surviving_nodes_matches(self):
+        _, report = select_bonds(self._frame(with_volume=False), self.ANALYSIS_DATE)
+        assert report["kept"].sum() == sum(sel for _, _, sel in self.ROWS) == 5
+
+    def test_every_row_matches_when_liquidity_favours_the_documented_picks(self):
+        _, report = select_bonds(self._frame(with_volume=True), self.ANALYSIS_DATE)
+        kept = dict(zip(report["isin"], report["kept"]))
+        for i, (_, date, expected) in enumerate(self.ROWS):
+            assert bool(kept[f"IN{i}"]) is expected, f"IN{i} ({date})"
+
+    def test_selected_nodes_are_more_than_90_days_apart(self):
+        selected, _ = select_bonds(self._frame(with_volume=True), self.ANALYSIS_DATE)
+        gaps = selected.sort_values("maturity")["maturity"].diff().dt.days.dropna()
+        assert (gaps > 90).all()
+
+    def test_one_year_exactly_is_excluded_not_included(self):
+        # "securities having less than or equal to 1-year residual maturity will
+        # not be used as model input" -- the boundary is inclusive.
+        bonds = pd.DataFrame([
+            {"isin": "EXACT1Y", "desc": "x", "coupon": 7.0,
+             "maturity": pd.Timestamp("2027-09-21"), "price": 100.0, "ytm": 7.0},
+            {"isin": "MID", "desc": "x", "coupon": 7.0,
+             "maturity": pd.Timestamp("2031-09-21"), "price": 100.0, "ytm": 7.0},
+        ])
+        selected, report = select_bonds(bonds, "2026-09-21")
+        assert list(selected["isin"]) == ["MID"]
+        assert "1y or less" in report.loc[report["isin"] == "EXACT1Y", "reason"].iloc[0]
+
+
+class TestFbilInputPoints:
+    """FBIL's published file marks its own model inputs in a "Remark 1" column.
+
+    That marking is the verdict of the Level 1/2/3 qualification waterfall we
+    cannot reproduce (the trade counts behind it are not published). Using it is
+    opt-in, because an input set taken from FBIL's own output makes the
+    comparison against FBIL partly circular.
+    """
+
+    def _bonds(self, marks):
+        return pd.DataFrame([
+            {"isin": f"IN{i}", "desc": "x", "coupon": 7.0,
+             "maturity": SETTLE + timedelta(days=int(365 * yrs)),
+             "price": 100.0, "ytm": 7.0, "remark": mark}
+            for i, (yrs, mark) in enumerate(marks)
+        ])
+
+    def test_absent_column_changes_nothing(self):
+        plain = pd.DataFrame([_bond("A", 2.0), _bond("B", 5.0), _bond("C", 9.0)])
+        assert fbil_input_points(plain) is None
+        with_col = plain.assign(remark=[None, None, None])
+        assert fbil_input_points(with_col) is None, "all-blank remarks must read as absent"
+
+    def test_missing_remarks_do_not_raise(self):
+        # A nullable-string comparison yields NA rather than False; if that
+        # leaks through, selection blows up on the first unmarked bond.
+        bonds = self._bonds([(2.0, "Input Point"), (5.0, None), (9.0, float("nan"))])
+        selected, _ = select_bonds(bonds, SETTLE, follow_fbil_input_points=True)
+        assert list(selected["isin"]) == ["IN0"]
+
+    def test_marked_isin_wins_a_90_day_group(self):
+        # IN0 and IN1 mature ~36 days apart, so only one survives the group.
+        # Without a remark column the earlier one wins on the fallback; with
+        # one, FBIL's own pick wins -- and this happens on the ordinary path,
+        # no opt-in needed, because it is strictly a better tie-break.
+        marks = [(2.0, None), (2.1, "Input Point"), (5.0, None)]
+
+        without = select_bonds(self._bonds(marks).drop(columns=["remark"]), SETTLE)[0]
+        assert list(without["isin"]) == ["IN0", "IN2"]
+
+        with_remark = select_bonds(self._bonds(marks), SETTLE)[0]
+        assert list(with_remark["isin"]) == ["IN1", "IN2"]
+
+    def test_follow_mode_takes_exactly_the_marked_set(self):
+        bonds = self._bonds([(2.0, "Input Point"), (5.0, None), (9.0, "Input Point"), (20.0, "Input Point")])
+        selected, report = select_bonds(bonds, SETTLE, follow_fbil_input_points=True)
+        assert set(selected["isin"]) == {"IN0", "IN2", "IN3"}
+        assert "marked 'Input Point' by FBIL" in report.loc[report["isin"] == "IN0", "reason"].iloc[0]
+
+    def test_follow_mode_still_excludes_the_short_segment(self):
+        # A sub-1y bond marked by FBIL is still left to the T-bill points.
+        bonds = self._bonds([(0.5, "Input Point"), (5.0, "Input Point")])
+        selected, _ = select_bonds(bonds, SETTLE, follow_fbil_input_points=True)
+        assert list(selected["isin"]) == ["IN1"]
+
+    def test_follow_mode_is_off_by_default(self):
+        bonds = self._bonds([(2.0, None), (5.0, "Input Point"), (9.0, None)])
+        default, _ = select_bonds(bonds, SETTLE)
+        assert len(default) == 3, "default must not silently adopt FBIL's node set"
+
+    def test_case_and_whitespace_tolerant(self):
+        bonds = self._bonds([(2.0, "  input point  "), (5.0, None)])
+        selected, _ = select_bonds(bonds, SETTLE, follow_fbil_input_points=True)
+        assert list(selected["isin"]) == ["IN0"]
+
+    def test_boolean_column_is_accepted(self):
+        bonds = pd.DataFrame([
+            {**_bond("A", 2.0), "fbil_input_point": True},
+            {**_bond("B", 5.0), "fbil_input_point": False},
+        ])
+        selected, _ = select_bonds(bonds, SETTLE, follow_fbil_input_points=True)
+        assert list(selected["isin"]) == ["A"]

@@ -33,7 +33,10 @@ LONG_END_YEARS = 14.0
 MIN_GAP_DAYS = 90
 LONG_BUCKETS = ((14, 18), (18, 22), (22, 26), (26, 30), (30, 34), (34, 1000))
 TBILL_TARGETS = (7 / 365, 0.5, 1.0)
-LIQUIDITY_COLUMNS = ("volume", "traded_volume", "liquidity", "turnover", "nos_trades")
+VOLUME_COLUMNS = ("volume", "traded_volume", "turnover", "liquidity")
+TRADES_COLUMNS = ("trades", "no_of_trades", "nos_trades", "num_trades", "n_trades")
+INPUT_POINT_COLUMNS = ("fbil_input_point", "input_point", "remark", "remark_1", "remark1")
+INPUT_POINT_LABEL = "input point"
 
 
 def residual_years(maturity, settle) -> float:
@@ -59,17 +62,81 @@ def parse_tenor(value) -> float:
     return number
 
 
-def _liquidity_column(df: pd.DataFrame) -> str | None:
-    for name in LIQUIDITY_COLUMNS:
+def _first_column(df: pd.DataFrame, names) -> str | None:
+    for name in names:
         if name in df.columns:
             return name
     return None
 
 
-def _pick_one(group: pd.DataFrame, liquidity: str | None) -> pd.Series:
-    """Most liquid bond in the group, falling back to the earliest maturity."""
-    if liquidity is not None and group[liquidity].notna().any():
-        return group.sort_values([liquidity, "residual_years"], ascending=[False, True]).iloc[0]
+def selection_metric(df: pd.DataFrame) -> pd.Series | None:
+    """FBIL's liquidity yardstick: volume x number of trades.
+
+    The Concept Note picks the surviving ISIN of a 90-day group by "higher
+    volume*trades during the last 5 business days", and falls back to the same
+    product on the previous day for the long-end buckets. The published
+    valuation file carries a traded-volume column but no trade count, so when
+    the count is absent we rank on volume alone -- a documented approximation,
+    not the rule as written.
+    """
+    volume = _first_column(df, VOLUME_COLUMNS)
+    trades = _first_column(df, TRADES_COLUMNS)
+    if volume is None and trades is None:
+        return None
+    if volume is None:
+        return df[trades].astype(float)
+    if trades is None:
+        return df[volume].astype(float)
+    return df[volume].astype(float) * df[trades].astype(float)
+
+
+def fbil_input_points(df: pd.DataFrame) -> pd.Series | None:
+    """Which ISINs FBIL itself used as model inputs, if the data says so.
+
+    FBIL's published G-Sec valuation file carries a "Remark 1" column whose
+    value is "Input Point" for the ISINs that went into its own cubic spline.
+    That is the outcome of the Level 1/2/3 qualification we cannot reproduce --
+    the trade counts behind it are not published, but the verdict is.
+
+    Returns a boolean Series, or None when the column is absent (A's cleaned
+    bonds.csv does not currently carry it, so this stays inert until it does).
+    """
+    column = _first_column(df, INPUT_POINT_COLUMNS)
+    if column is None:
+        return None
+    values = df[column]
+    if values.dtype == bool:
+        flags = values.fillna(False)
+    else:
+        # A nullable-string comparison yields NA (not False) for missing
+        # remarks, which is not safely truthy -- coerce before returning.
+        flags = (values.astype("string").str.strip().str.lower() == INPUT_POINT_LABEL).fillna(False)
+    return flags.astype(bool) if flags.any() else None
+
+
+def _pick_one(
+    group: pd.DataFrame,
+    metric: pd.Series | None,
+    input_points: pd.Series | None = None,
+) -> pd.Series:
+    """Pick one ISIN from a group.
+
+    Order of preference: an ISIN FBIL itself marked as an input point, then the
+    highest volume*trades, then the earliest maturity.
+    """
+    if input_points is not None:
+        marked = group.index[input_points.reindex(group.index).fillna(False)]
+        if len(marked) == 1:
+            return group.loc[marked[0]]
+        if len(marked) > 1:
+            group = group.loc[marked]
+    if metric is not None:
+        scores = metric.reindex(group.index)
+        if scores.notna().any():
+            ranked = group.assign(_score=scores).sort_values(
+                ["_score", "residual_years"], ascending=[False, True]
+            )
+            return group.loc[ranked.index[0]]
     return group.sort_values("residual_years").iloc[0]
 
 
@@ -99,6 +166,7 @@ def select_bonds(
     settle,
     thin_90d: bool = True,
     min_gap_days: int = MIN_GAP_DAYS,
+    follow_fbil_input_points: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Thin the bond list to curve nodes.
 
@@ -111,35 +179,85 @@ def select_bonds(
     work["maturity_date"] = [to_date(m) for m in work["maturity"]]
     work = work.sort_values("residual_years").reset_index(drop=True)
 
-    liquidity = _liquidity_column(work)
+    metric = selection_metric(work)
+    input_points = fbil_input_points(work)
     keep, reason, segment = {}, {}, {}
 
     for i, row in work.iterrows():
         rm = row["residual_years"]
         if rm <= 0:
             segment[i], keep[i], reason[i] = "matured", False, "matured on or before settlement"
-        elif rm < SHORT_END_YEARS:
-            segment[i], keep[i], reason[i] = "short", False, "under 1y, covered by T-bills"
+        elif rm <= SHORT_END_YEARS:
+            # "Traded G-Sec securities having less than or equal to 1-year
+            # residual maturity will not be used as model input" -- the second
+            # segment starts strictly above 1 year.
+            segment[i], keep[i], reason[i] = "short", False, "1y or less, covered by T-bills"
         elif rm <= LONG_END_YEARS:
             segment[i] = "mid"
         else:
             segment[i] = "long"
 
-    # 1-14y: greedy 90-day spacing.
-    mid = work[[segment[i] == "mid" for i in work.index]]
-    last_kept = None
-    for i, row in mid.iterrows():
-        if not thin_90d:
-            keep[i], reason[i] = True, "mid segment, thinning disabled"
-            continue
-        if last_kept is None:
-            keep[i], reason[i] = True, "mid segment, first node"
-            last_kept = row["maturity_date"]
-        elif (row["maturity_date"] - last_kept).days > min_gap_days:
-            keep[i], reason[i] = True, f"mid segment, >{min_gap_days}d after previous node"
-            last_kept = row["maturity_date"]
-        else:
-            keep[i], reason[i] = False, f"mid segment, within {min_gap_days}d of previous node"
+    if follow_fbil_input_points and input_points is not None:
+        # Adopt FBIL's published node set verbatim. This is the closest we can
+        # get to the Concept Note's qualification rules, but it makes the input
+        # set an output of the very model we compare against, so it is opt-in
+        # and reported separately rather than being the headline curve.
+        for i in work.index:
+            if segment[i] in ("matured", "short"):
+                continue
+            marked = bool(input_points.get(i, False))  # coerced to plain bool upstream
+            keep[i] = marked
+            reason[i] = (
+                f"{segment[i]} segment, marked 'Input Point' by FBIL"
+                if marked
+                else f"{segment[i]} segment, not an FBIL input point"
+            )
+        work["segment"] = [segment[i] for i in work.index]
+        work["kept"] = [keep.get(i, False) for i in work.index]
+        work["reason"] = [reason.get(i, "") for i in work.index]
+        report_cols = [c for c in ("isin", "desc", "coupon", "maturity", "residual_years", "segment", "kept", "reason") if c in work.columns]
+        selected = work[work["kept"]].drop(columns=["maturity_date", "kept", "reason"]).reset_index(drop=True)
+        return selected, work[report_cols].reset_index(drop=True)
+
+    # 1-14y: "If two or more ISINs have dates of redemption differing by 90
+    # days or less, only one of them will be selected as input into the model.
+    # The ISIN with higher volume*trades during the last 5 business days will be
+    # chosen." The Concept Note's two stated objectives are a minimum spacing
+    # between nodes AND "maximum use of qualifying traded securities ... minimum
+    # loss of data", so we take the most liquid ISIN of each 90-day window as a
+    # node, then resume scanning from the first bond more than 90 days after it.
+    # That keeps every node >90 days apart without discarding a bond merely for
+    # being chained to one through an intermediate ISIN.
+    mid = work[[segment[i] == "mid" for i in work.index]].sort_values("maturity_date")
+    if not thin_90d:
+        for i in mid.index:
+            keep[i], reason[i] = True, "mid segment, 90-day grouping disabled"
+    else:
+        remaining = list(mid.index)
+        while remaining:
+            anchor = remaining[0]
+            anchor_date = mid.loc[anchor, "maturity_date"]
+            window = [
+                i for i in remaining
+                if (mid.loc[i, "maturity_date"] - anchor_date).days <= min_gap_days
+            ]
+            winner = _pick_one(mid.loc[window], metric, input_points).name if len(window) > 1 else anchor
+            keep[winner] = True
+            reason[winner] = (
+                "mid segment, no other ISIN within 90 days"
+                if len(window) == 1
+                else f"mid segment, most liquid of {len(window)} ISINs within {min_gap_days}d"
+            )
+            for i in window:
+                if i != winner:
+                    keep[i] = False
+                    reason[i] = f"mid segment, within {min_gap_days}d of a more liquid ISIN"
+            winner_date = mid.loc[winner, "maturity_date"]
+            remaining = [
+                i for i in remaining
+                if i not in window
+                and (mid.loc[i, "maturity_date"] - winner_date).days > min_gap_days
+            ]
 
     # >14y: one per bucket, plus the terminal ISIN.
     long = work[[segment[i] == "long" for i in work.index]]
@@ -149,7 +267,7 @@ def select_bonds(
         bucket = long[(long["residual_years"] > lo) & (long["residual_years"] <= hi)]
         if len(bucket) == 0:
             continue
-        pick = _pick_one(bucket, liquidity)
+        pick = _pick_one(bucket, metric, input_points)
         keep[pick.name], reason[pick.name] = True, f"long segment, representative of {lo}-{hi}y bucket"
     if len(long) > 0:
         terminal = long.sort_values("residual_years").index[-1]
@@ -170,8 +288,12 @@ def select_inputs(
     settle,
     thin_90d: bool = True,
     min_gap_days: int = MIN_GAP_DAYS,
+    follow_fbil_input_points: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Full input set for the bootstrap: ``(bonds_sel, tbills_sel, report)``."""
-    bonds_sel, report = select_bonds(bonds, settle, thin_90d=thin_90d, min_gap_days=min_gap_days)
+    bonds_sel, report = select_bonds(
+        bonds, settle, thin_90d=thin_90d, min_gap_days=min_gap_days,
+        follow_fbil_input_points=follow_fbil_input_points,
+    )
     tbills_sel = select_tbills(tbills)
     return bonds_sel, tbills_sel, report

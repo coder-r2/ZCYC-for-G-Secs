@@ -45,6 +45,11 @@ knot; discount factors strictly decreasing across the whole output grid.
 
 **Known simplifications vs the official methodology**
 
+> Every divergence between our method and the source documents -- including the
+> ones we could not resolve -- is set out with citations in
+> [`methodology-divergences.md`](methodology-divergences.md). The list below is
+> the curve-engine subset.
+
 1. FBIL's Pienaar–Choudhry formulation is not public, so this is a cubic-spline
    **approximation of** that approach, not a reimplementation of it.
 2. No public-holiday calendar; T+1 settlement rolls over weekends only.
