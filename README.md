@@ -1,8 +1,22 @@
-# Mini Project 1 — G-Sec ZCYC Bootstrap + SDL STRIPS
+# G-Sec ZCYC Bootstrap + SDL STRIPS
 
 Bootstraps a Zero Coupon Yield Curve (ZCYC) for Government Securities using a cubic-spline
 model, compares it against FBIL's published curve, and (bonus) prices STRIPS on a State
 Development Loan using the RBI stripping guidelines.
+
+## Acknowledgement
+
+This mini-project was done as part of the course MG251: Finance & Accounts (Fall '26 Semester) at IISc Bangalore.
+
+Team Members:
+- Abinav Thangaraju Sethupathy
+- A.S. Kretik
+- Khaja Aflal H
+- Rishe Raghavendira Gnanasekaran
+
+## Slides
+
+`presentation/Project-Presentation.pdf` contains the slide deck for this project.
 
 ## Setup
 
