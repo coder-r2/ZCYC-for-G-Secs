@@ -51,9 +51,18 @@ SCHEMAS: dict[str, list[str]] = {
     ],
 }
 
-# Published ZCYC grids: (first tenor, last tenor, step).
-ZCYC_GRID = (0.25, 40.0, 0.25)
+# Published ZCYC grids: (first tenor, last tenor, step). Both were read off
+# FBIL's actual files: the G-Sec curve runs 0.25 to 50.00 (200 points), not to
+# 40.00 as the interface contract guessed, and the SDL curve stops at 14.00
+# (56 points) as expected.
+ZCYC_GRID = (0.25, 50.0, 0.25)
 SDL_ZCYC_GRID = (0.25, 14.0, 0.25)
+
+# Columns of a published ZCYC file that FBIL does not always publish. It gives
+# a par curve alongside the G-Sec zero curve but none alongside the SDL one,
+# so for SDL these columns exist in the schema and are empty. Nothing is
+# invented to fill them.
+OPTIONAL_ZCYC_COLUMNS = ("par_semi", "par_annual")
 
 # T-bill points the short end is built from, in the order the schema lists them.
 TBILL_TENORS = (("7D", 7 / 365), ("6M", 0.5), ("12M", 1.0))
@@ -67,6 +76,14 @@ SOURCE_FILE = "SOURCE.md"
 SDL_MAX_RESIDUAL_YEARS = 14.0
 CRORE = 10_000_000
 DEFAULT_FACE_STRIPPED = 5 * CRORE
+
+# Scenario 2's book value, as a fraction of market value. This is the ONLY
+# assumed number anywhere in the pipeline: RBI's min(book, market) rule has a
+# book-bound branch that cannot be reached without a book value below market,
+# and no one publishes a book value -- it is the holder's own carrying value,
+# specific to their portfolio and acquisition history. Scenario 1 avoids the
+# problem entirely by using face value, which is real. See parse_sdl_bond.
+SCENARIO_2_BOOK_FRACTION = 0.97
 
 
 # --------------------------------------------------------------------- aliases
@@ -82,11 +99,24 @@ BOND_ALIASES: dict[str, tuple[str, ...]] = {
     "isin": ("isin", "isinno", "isincode", "securityisin"),
     "desc": ("desc", "description", "securitydescription", "security", "securityname", "nomenclature"),
     "coupon": ("coupon", "couponrate", "coupon", "couponinpercent", "couponrateinpercent"),
-    "maturity": ("maturity", "maturitydate", "dateofmaturity", "redemptiondate", "maturitydt"),
+    "maturity": ("maturity", "maturitydate", "dateofmaturity", "redemptiondate", "maturitydt",
+                 "maturityddmmmyyyy"),
     "price": ("price", "cleanprice", "valuationprice", "priceper100", "fimmdaprice", "pricers"),
-    "ytm": ("ytm", "yieldtomaturity", "ytminpercent", "annualisedytm", "yield", "valuationytm"),
+    "ytm": ("ytm", "yieldtomaturity", "ytminpercent", "annualisedytm", "yield", "valuationytm",
+            "ytmpasemiannual"),
     "volume": ("volume", "tradedvolume", "turnover", "tradedvalue", "totaltradedvalue", "nosoftrades", "trades"),
+    # Not part of the `bonds` schema and dropped before it is returned. Read
+    # only so parse_bonds can see FBIL's "FRB" flag -- see FLOATER_REMARKS.
+    "remark": ("remark1", "remark", "remarks", "securitytype"),
 }
+
+# Values of FBIL's Remark column that mark a security whose cash flows are not
+# a fixed nominal coupon stream: floating-rate bonds reset off a benchmark and
+# inflation-indexed bonds pay on an indexed principal. Their quoted YTM is not
+# comparable with a fixed-coupon YTM, so fitting a nominal zero curve through
+# them is wrong however good the fit looks. FBIL excludes them from its own
+# curve too -- none of them carries the "Input Point" flag.
+FLOATER_REMARKS = ("frb", "iib", "floating", "inflation")
 
 TBILL_ALIASES: dict[str, tuple[str, ...]] = {
     "tenor": ("tenor", "tenure", "maturity", "period", "tenorindays", "residualmaturity"),
@@ -94,19 +124,24 @@ TBILL_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 ZCYC_ALIASES: dict[str, tuple[str, ...]] = {
-    "tenor_years": ("tenoryears", "tenor", "tenorinyears", "tenoryrs", "maturityyears", "years", "term"),
+    "tenor_years": ("tenoryears", "tenor", "tenorinyears", "tenoryrs", "maturityyears", "years", "term",
+                    "tenoryear"),
     "zcy_semi": ("zcysemi", "zcycsemiannual", "zerocouponyieldsemiannual", "zcycsemi", "zerosemi",
-                 "zcycsemiannualised", "semiannualzcyc"),
+                 "zcycsemiannualised", "semiannualzcyc", "zerocouponsemiannual"),
     "zcy_annual": ("zcyannual", "zcycannualised", "zerocouponyieldannualised", "zcycannual",
-                   "zeroannual", "annualisedzcyc", "zcycannualized"),
-    "par_semi": ("parsemi", "parcurvesemiannual", "paryieldsemiannual", "parsemiannual", "semiannualpar"),
+                   "zeroannual", "annualisedzcyc", "zcycannualized", "zerocouponannualized"),
+    # FBIL heads its par curve "YTM% p.a.(Semi-Annual)" -- the same words it
+    # uses for a bond's own YTM, which is why the par spellings only ever get
+    # looked up against a ZCYC file.
+    "par_semi": ("parsemi", "parcurvesemiannual", "paryieldsemiannual", "parsemiannual", "semiannualpar",
+                 "ytmpasemiannual"),
     "par_annual": ("parannual", "parcurveannualised", "paryieldannualised", "parannualised",
-                   "annualisedpar", "parannualized"),
+                   "annualisedpar", "parannualized", "ytmpaannualized"),
 }
 
 SDL_BOND_ALIASES: dict[str, tuple[str, ...]] = {
     **{k: v for k, v in BOND_ALIASES.items() if k in ("isin", "desc", "coupon", "maturity")},
-    "market_price": ("marketprice", "price", "cleanprice", "valuationprice", "priceper100"),
+    "market_price": ("marketprice", "price", "cleanprice", "valuationprice", "priceper100", "pricers"),
 }
 
 # Filename fragments that identify each raw file's role. Checked in order, and
@@ -312,6 +347,14 @@ def parse_bonds(path: Path, valuation_date) -> pd.DataFrame:
     # fallback for NaN values, but a missing column would raise a KeyError.
     df["volume"] = _to_number(df["volume"]) if "volume" in df.columns else np.nan
 
+    # Drop floating-rate and inflation-indexed bonds. Their published YTM is
+    # not a fixed-coupon YTM, so they cannot price off a nominal zero curve;
+    # left in, five FRBs would drag the 2-9 year segment with yields that mean
+    # something else entirely. The remark column is FBIL's own flag.
+    if "remark" in df.columns:
+        flag = df["remark"].astype(str).str.lower()
+        df = df[~flag.str.contains("|".join(FLOATER_REMARKS), na=False)]
+
     df = df.drop_duplicates(subset="isin", keep="first")
     d = to_date(valuation_date)
     df = df[pd.to_datetime(df["maturity"]).dt.date > d].reset_index(drop=True)
@@ -350,12 +393,19 @@ def parse_tbills(path: Path) -> pd.DataFrame:
 
 
 def parse_zcyc(path: Path, kind: str) -> pd.DataFrame:
-    """FBIL published ZCYC + par curve -> the frozen `fbil_zcyc` schema."""
+    """FBIL published ZCYC (+ par curve where there is one) -> the `fbil_zcyc` schema.
+
+    The par columns are optional: FBIL publishes a G-Sec par curve but no SDL
+    one. A missing par column becomes an empty column rather than a computed
+    one -- the par yields implied by the published zeros are a derivation, not
+    a publication, and this file is only ever read as "what FBIL said".
+    """
     raw = _read_any(Path(path))
     table = _apply_header(raw, _header_row(raw, ZCYC_ALIASES))
-    df = _map_columns(table, ZCYC_ALIASES, tuple(SCHEMAS[kind]), Path(path).name)
+    required = tuple(c for c in SCHEMAS[kind] if c not in OPTIONAL_ZCYC_COLUMNS)
+    df = _map_columns(table, ZCYC_ALIASES, required, Path(path).name)
     for col in SCHEMAS[kind]:
-        df[col] = _to_number(df[col])
+        df[col] = _to_number(df[col]) if col in df.columns else np.nan
     df = df.dropna(subset=["tenor_years"]).sort_values("tenor_years").reset_index(drop=True)
     df["tenor_years"] = df["tenor_years"].round(2)
     return df[SCHEMAS[kind]]
@@ -370,10 +420,29 @@ def parse_sdl_bond(path: Path, valuation_date, face_stripped: float | None = Non
     since a longer parent has more remaining coupons and therefore more
     Coupon STRIPS on the slide.
 
-    The two book-value scenarios are set to straddle market value so the
-    min(book, market) normalisation can be shown binding each way. That is a
-    presentational choice, not market data, and it is recorded as such in
-    docs/assumptions.md.
+    The two book-value scenarios straddle market value so RBI's
+    min(book, market) normalisation can be shown binding each way.
+
+    **Book value is the only figure in this project that is not published
+    market data, and it cannot be.** It is the holder's own accounting
+    carrying value: it depends on which portfolio the security sits in
+    (HTM/AFS/HFT), what was paid for it and what depreciation has already
+    been booked. Two banks holding this ISIN on the same day carry it at
+    different values. Neither FBIL nor RBI publishes it and no download
+    exists. So the two scenarios are handled differently:
+
+    * Scenario 1 uses the security's **face value**, which is real and
+      published: a holding acquired at par and carried in HTM sits on the
+      books at face. This SDL trades below par, so face exceeds market value,
+      `min()` selects market value, and **every number the STRIP engine
+      produces under scenario 1 comes from FBIL data alone.** This is the
+      scenario to quote.
+    * Scenario 2 needs a book value *below* market for the book-bound branch
+      to be reachable at all, and nothing real supplies one. It is a declared
+      accounting assumption (`SCENARIO_2_BOOK_FRACTION` of market value),
+      recorded in docs/assumptions.md, and is the single assumed input in the
+      whole pipeline. Present it as an illustration of the rule, never as a
+      result.
     """
     raw = _read_any(Path(path))
     table = _apply_header(raw, _header_row(raw, SDL_BOND_ALIASES))
@@ -408,6 +477,19 @@ def parse_sdl_bond(path: Path, valuation_date, face_stripped: float | None = Non
     dirty_per_100 = float(row["market_price"]) + accrued_30_360(coupon, maturity, settle)
     market_value = dirty_per_100 * face / 100.0
 
+    # Scenario 1 only works as the market-bound case while the parent trades
+    # below par. It does here (97.58 clean), but an above-par SDL would make
+    # face the lower of the two and silently turn scenario 1 into the
+    # book-bound case -- still real data, but no longer the scenario the
+    # slides describe. Raise rather than let that pass unnoticed.
+    if face <= market_value:
+        raise ValueError(
+            f"{row['isin']} has a dirty price of {dirty_per_100:.4f} per 100, at or above par, so its "
+            f"face value ({face:,.0f}) does not exceed market value ({market_value:,.2f}). Scenario 1 "
+            "uses face as a real book value and needs it to be the higher of the two. Pick a "
+            "sub-par SDL, or change the scenario definitions and say so in docs/assumptions.md."
+        )
+
     return pd.DataFrame(
         [
             {
@@ -417,11 +499,12 @@ def parse_sdl_bond(path: Path, valuation_date, face_stripped: float | None = Non
                 "maturity": maturity,
                 "market_price": float(row["market_price"]),
                 "face_stripped": face,
-                # Scenario 1 sits above market value (so market binds), scenario 2
-                # below it (so book binds). +/-3% is far enough clear of the
-                # normalisation to be unambiguous on a slide.
-                "book_value_scenario_1": round(market_value * 1.03, 2),
-                "book_value_scenario_2": round(market_value * 0.97, 2),
+                # Face value: real, published, and above market value for any
+                # sub-par bond, so min() picks market and scenario 1's output
+                # is FBIL data end to end. Asserted below rather than assumed.
+                "book_value_scenario_1": round(face, 2),
+                # The one assumed number in the pipeline -- see the docstring.
+                "book_value_scenario_2": round(market_value * SCENARIO_2_BOOK_FRACTION, 2),
             }
         ]
     )[SCHEMAS["sdl_bond"]]
@@ -450,6 +533,8 @@ def _check_grid(df: pd.DataFrame, name: str, grid: tuple[float, float, float]) -
         raise ValueError(f"{name}: grid must run {start} to {stop}, got {t[0]} to {t[-1]}")
 
     for col in ("zcy_semi", "zcy_annual", "par_semi", "par_annual"):
+        if col in OPTIONAL_ZCYC_COLUMNS and df[col].isna().all():
+            continue    # FBIL published no par curve for this benchmark.
         _check_percent(df[col], f"{name}.{col}")
     if (df["zcy_annual"] < df["zcy_semi"]).any():
         raise ValueError(f"{name}: annualised rate below the semiannual one -- columns look swapped")
@@ -729,18 +814,25 @@ def write_sample_raw(raw_dir: str | Path = "data/raw", valuation_date: str = "20
         )
 
     paths["fbil_zcyc"] = raw_dir / "fbil_gsec_zcyc_SAMPLE.csv"
-    zcyc_frame(40.0, lambda t: 0.02 * np.sin(np.asarray(t, dtype=float) / 6.0)).to_csv(paths["fbil_zcyc"], index=False)
+    zcyc_frame(ZCYC_GRID[1], lambda t: 0.02 * np.sin(np.asarray(t, dtype=float) / 6.0)).to_csv(
+        paths["fbil_zcyc"], index=False
+    )
 
     paths["fbil_sdl_zcyc"] = raw_dir / "fbil_sdl_zcyc_SAMPLE.csv"
     # SDLs trade at a spread over the sovereign curve; ~40bp widening with tenor.
-    zcyc_frame(14.0, lambda t: 0.30 + 0.012 * np.asarray(t, dtype=float)).to_csv(paths["fbil_sdl_zcyc"], index=False)
+    zcyc_frame(SDL_ZCYC_GRID[1], lambda t: 0.30 + 0.012 * np.asarray(t, dtype=float)).to_csv(
+        paths["fbil_sdl_zcyc"], index=False
+    )
 
     # --- SDL valuation file, in html this time so that reader is exercised too.
     sdl_rows = []
     for i, years in enumerate((3.4, 6.2, 8.7, 11.3, 13.4, 17.0)):
         maturity = pd.Timestamp(settle) + pd.Timedelta(days=int(round(365.25 * years)))
         t = (maturity.date() - settle).days / 365.0
-        coupon = round(float(zero_semi(t)) + 0.45, 2)
+        # Below the discount curve, so the stand-in SDL prices under par --
+        # parse_sdl_bond needs face value to exceed market value for scenario 1
+        # to be the market-bound case. The real 2026-09-11 SDL is sub-par too.
+        coupon = round(float(zero_semi(t)) - 0.45, 2)
         from src.bond import cashflows as _cashflows
 
         cf = _cashflows(coupon, maturity.date(), settle)
@@ -780,15 +872,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", required=True, help="Valuation date the raw files were published for, YYYY-MM-DD")
     parser.add_argument("--raw-dir", default="data/raw")
     parser.add_argument("--clean-dir", default="data/clean")
-    parser.add_argument(
-        "--write-sample",
-        action="store_true",
-        help="First write *_SAMPLE stand-ins into --raw-dir. Development only; never for submission.",
-    )
+    # There is deliberately no --write-sample flag. It existed while the real
+    # download was still awaited and is gone now that it has arrived: the one
+    # way this project could go badly wrong is invented market data reaching
+    # data/clean/, and a CLI switch that writes stand-ins into the real raw
+    # directory is the obvious path for that to happen by accident.
+    # write_sample_raw() survives for tests/test_data_loader.py, which only
+    # ever points it at a pytest tmp directory.
     args = parser.parse_args(argv)
-
-    if args.write_sample:
-        write_sample_raw(args.raw_dir, args.date)
 
     frames = build_clean_data(args.raw_dir, args.clean_dir, args.date)
     provenance = clean_data_provenance(args.clean_dir)
