@@ -177,7 +177,7 @@ the published JSON out as a table.
 
 | Assumed | Actually published | Consequence |
 |---|---|---|
-| G-Sec ZCYC runs 0.25→40.00 | 0.25→**50.00**, 200 points | `ZCYC_GRID` and `Curve.grid_stop` both moved to 50.0 — `compare()` requires a 1:1 join, so our grid has to match FBIL's |
+| G-Sec ZCYC runs 0.25→40.00 | 0.25→**50.00**, 200 points | `ZCYC_GRID` and `Curve.grid_stop` both moved to 50.0 — `compare()` requires a 1:1 join, so our grid has to match FBIL's. Not actually a divergence from the Concept Note: Section X.5 specifies "0.25 years to 40 years **or equivalent to the highest issued G-Sec Bond**" — 50y is that clause, not an override of it |
 | Zero and par curves ship together | Published in **two different workbooks** | The fetcher joins them on tenor before the loader sees them |
 | SDL file carries a par curve | FBIL publishes **no SDL par curve** | `par_semi`/`par_annual` exist but are **empty** in `fbil_sdl_zcyc.csv`. They are not filled with par yields implied by the published zeros: that would be our derivation printed in a file the rest of the pipeline reads as "what FBIL said". Nothing consumes them — `compare()` works off `zcy_semi` |
 | Bond file carries volume / trade counts | Only ISIN, coupon, maturity, price, YTM, two remark columns | `bonds.csv.volume` is entirely NaN, so `selection.py` falls back to earliest-maturity for every long-end bucket. Our node set is therefore **not** liquidity-weighted the way FBIL's is |
