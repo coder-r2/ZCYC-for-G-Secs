@@ -7,11 +7,11 @@ makes the Definition of Done for C2: normalized values sum to
 min(book_value, market_value), and the two scenarios actually differ in
 which value binds.
 
-NOTE: sdl_bond.csv / fbil_sdl_zcyc.csv are STUB data as of this test -- A
-hasn't pushed the real FBIL download yet (see C_status.md dependency watch
-and divergence D7). Swap the two CSVs for A's real files once available;
-nothing here should need to change since both stubs match the frozen
-schema exactly (technical-schema.md Sec 2.3/2.4).
+Settle date is read from data/clean/SOURCE.md (via conftest.real_data_settle),
+not hardcoded -- an earlier version of this file had a fixed stub settle
+that silently kept overwriting outputs/ with the wrong dates every time
+pytest ran, even after real FBIL data landed (see C_status.md D12's writeup
+of the same class of bug in test_curve.py).
 """
 
 import sys
@@ -24,12 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from conftest import real_data_settle  # noqa: E402
 from src.bond import accrued_30_360  # noqa: E402
 from src.strips import price_sdl  # noqa: E402
 
 DATA_DIR = REPO_ROOT / "data" / "clean"
 OUTPUTS_DIR = REPO_ROOT / "outputs"
-SETTLE = pd.Timestamp("2026-09-21")  # STUB valuation date -- see C_status.md; matches B's own test settle
+SETTLE = real_data_settle()
 
 
 def _load_sdl_bond_row():
@@ -73,9 +74,10 @@ def test_c2_sdl_pricing_scenarios():
     bv1 = float(row["book_value_scenario_1"])
     bv2 = float(row["book_value_scenario_2"])
 
-    # The stub data is deliberately set up so scenario 1 is MV-bound and
-    # scenario 2 is BV-bound -- that's the whole point of running two
-    # scenarios (SPEC.md Sec 2, C2).
+    # Scenario 1 is MV-bound and scenario 2 is BV-bound -- that's the whole
+    # point of running two scenarios (SPEC.md Sec 2, C2). If this ever stops
+    # holding once the data changes, that's a data fact to report, not a
+    # test to loosen.
     assert bv1 > market_value
     assert bv2 < market_value
 

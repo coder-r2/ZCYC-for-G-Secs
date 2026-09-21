@@ -74,3 +74,23 @@ def fitted_curve(synthetic_bonds, synthetic_tbills):
     from src.curve import build_zcyc
 
     return build_zcyc(synthetic_bonds, synthetic_tbills, SETTLE)
+
+
+def real_data_settle() -> pd.Timestamp:
+    """The settlement date matching whatever's actually in data/clean/ right
+    now, read from SOURCE.md rather than hardcoded.
+
+    data/clean/*.csv's own values (prices, YTMs, book values) are anchored to
+    a specific valuation date, and a fixed constant here would go stale the
+    next time the data is refreshed -- this already happened twice
+    independently (a real-data curve test and the SDL pricing test each had
+    their own stale hardcoded settle before real FBIL data landed). Shared
+    here so it can't drift out of sync between test files again.
+    """
+    import re
+
+    text = (REPO_ROOT / "data" / "clean" / "SOURCE.md").read_text()
+    match = re.search(r"Settlement date \(T\+1\): \*\*([\d-]+)\*\*", text)
+    if not match:
+        raise ValueError("could not find the settlement date in data/clean/SOURCE.md")
+    return pd.Timestamp(match.group(1))

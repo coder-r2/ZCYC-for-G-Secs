@@ -15,7 +15,7 @@ import pytest
 from src.bond import annualise, cashflows, accrued_30_360
 from src.curve import Curve, CurveConfig, ablation_grid, build_zcyc
 
-from conftest import true_zero
+from conftest import real_data_settle, true_zero
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOL = 1e-6
@@ -249,23 +249,6 @@ class TestInputHandling:
         assert {"isin", "segment", "kept", "reason"} <= set(report.columns)
 
 
-def _real_data_settle() -> "pd.Timestamp":
-    """The settlement date matching whatever's actually in data/clean/ right
-    now, read from SOURCE.md rather than hardcoded -- data/clean/bonds.csv's
-    own price/ytm columns are anchored to a specific valuation date, and a
-    fixed constant here would go stale the next time A refreshes the data
-    (as happened once already: real data landed for 2026-09-11/settle
-    2026-09-14, while this file's own SETTLE constant is a fixed 2026-09-21
-    used only by the synthetic-curve tests above, unrelated to real data)."""
-    import re
-
-    text = (REPO_ROOT / "data" / "clean" / "SOURCE.md").read_text()
-    match = re.search(r"Settlement date \(T\+1\): \*\*([\d-]+)\*\*", text)
-    if not match:
-        raise ValueError("could not find the settlement date in data/clean/SOURCE.md")
-    return pd.Timestamp(match.group(1))
-
-
 @pytest.mark.skipif(
     not (REPO_ROOT / "data" / "clean" / "bonds.csv").exists(),
     reason="waiting on A's cleaned FBIL data",
@@ -276,7 +259,7 @@ class TestAgainstRealData:
     data/clean/bonds.csv -- skipped until then."""
 
     def test_dirty_price_agrees_with_fbil_for_five_bonds(self):
-        settle = _real_data_settle()
+        settle = real_data_settle()
         bonds = pd.read_csv(REPO_ROOT / "data" / "clean" / "bonds.csv", parse_dates=["maturity"])
         sample = bonds.dropna(subset=["price", "ytm"]).head(5)
         assert len(sample) >= 5, "need at least 5 priced bonds in data/clean/bonds.csv"
